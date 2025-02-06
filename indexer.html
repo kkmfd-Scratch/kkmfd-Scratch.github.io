@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+
+<style id="webmakerstyle">
+body {
+  display: grid;
+  background-color: black;
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  font-family: Arial, Helvetica, sans-serif; }
+
+.rectangle {
+  border-radius: 5%;
+  background-color: black;
+  position: absolute;
+  width: 100%;
+  height: 100%; }
+
+.bg_card {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  /* Push it behind everything */ }
+
+img {
+  position: absolute;
+  z-index: 0; }
+
+img.bg {
+  width: 100%; }
+
+img.bg_card {
+  width: 80%; }
+
+.title {
+  font-size: 48px;
+  text-align: center;
+  margin: 10px 0; }
+
+#html-window {
+  border-radius: 5%;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 400px;
+  height: 300px;
+  background: white;
+  /*border-radius: 10px;*/
+  padding: 20px;
+  box-shadow: 0px 0px 10px #00000030;
+  border-left: 1px solid #aaaaaa;
+  border-right: 1px solid #aaaaaa;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 100; }
+
+#ogl-canvas {
+  border-radius: 5%;
+  position: absolute;
+  width: 100%;
+  height: 100%; }
+
+</style>
+</head>
+<body>
+<script id="draw-shader-fs" type="x-shader/x-fragment">
+precision mediump float;
+
+uniform vec2 iResolution;
+uniform vec2 iMouse;
+uniform float iTime;
+// Analys cube
+// (c) 2019 FMS_Cat, MIT License
+
+// == tweak these numbers, yee =====================================================================
+#define SIZE 0.5
+#define FX_NYOOOM (iMouse.x/iResolution.x)
+#define FX_FORWARD 1.0
+#define FX_KICK (0.1*exp(-3.0*mod(BEAT,4.0)))
+#define FX_TWIST (20.0*exp(-3.0*mod(BEAT-2.0,4.0)))
+#define FX_SKEW 0.0
+#define FX_DEFORM (0.2*iMouse.y/iResolution.y)
+#define FX_DEFORM_FREQ 0.1
+
+// == raymarch related constants ===================================================================
+#define MARCH_ITER 64
+#define MARCH_EPSILON 1E-4
+#define MARCH_NEAR 0.01
+#define MARCH_FAR 40.0
+#define MARCH_MULP 0.6
+
+// == common macros ================================================================================
+#define HALF_PI 1.57079632679
+#define PI 3.14159265359
+#define TAU 6.28318530718
+#define BEAT (iTime*170.0/60.0)
+#define saturate(i) clamp(i,0.,1.)
+#define linearstep(a,b,t) saturate(((t)-(a))/((b)-(a)))
+
+// == common functions =============================================================================
+mat2 rotate2D( float t ) {
+  return mat2( cos( t ), -sin( t ), sin( t ), cos( t ) );
+}
+
+// == camera =======================================================================================
+struct Camera {
+  vec3 pos;
+  vec3 dir;
+  vec3 up;
+  float roll;
+  float fov;
+};
+
+Camera newCamera( vec3 pos, vec3 dir ) {
+  Camera camera;
+  camera.pos = pos;
+  camera.dir = dir;
+  camera.up = vec3( 0.0, 1.0, 0.0 );
+  camera.roll = 0.0;
+  camera.fov = 0.5;
+  return camera;
+}
+
+// == ray ==========================================================================================
+struct Ray {
+  vec3 orig;
+  vec3 dir;
+};
+
+Ray newRay( vec3 ori, vec3 dir ) {
+  Ray ray;
+  ray.orig = ori;
+  ray.dir = dir;
+  return ray;
+}
+
+Ray rayFromCamera( Camera camera, vec2 p ) {
+  vec3 dirX = normalize( cross( camera.dir, camera.up ) );
+  vec3 dirY = cross( dirX, camera.dir );
+  vec2 pt = rotate2D( camera.roll ) * p;
+  return newRay(
+    camera.pos,
+    normalize( pt.x * dirX + pt.y * dirY + camera.dir / tan( camera.fov ) )
+  );
+}
+
+vec3 getRayPosition( Ray ray, float len ) {
+  return ray.orig + ray.dir * len;
+}
+
+// == isect ========================================================================================
+struct Intersection {
+  Ray ray;
+  float len;
+  vec3 pos;
+};
+
+Intersection newIntersection( Ray ray, float len ) {
+  Intersection isect;
+  isect.ray = ray;
+  isect.len = len;
+  isect.pos = getRayPosition( ray, len );
+  return isect;
+}
+
+// == march result =================================================================================
+struct MarchResult {
+  float dist;
+  vec2 uv;
+};
+
+// == distFuncs ====================================================================================
+float distFuncBox( vec3 p, vec3 b ) {
+  vec3 d = abs( p ) - b;
+  return length( max( d, 0.0 ) ) + min( max( d.x, max( d.y, d.z ) ), 0.0 );
+}
+
+vec3 deform( vec3 p ) {
+  vec3 pt = p;
+  pt.xy = rotate2D( FX_SKEW * pt.z ) * pt.xy;
+  //pt.x *= 1.0 - sqrt( FX_NYOOOM );
+  //pt.yz = rotate2D( FX_NYOOOM * exp( 5.0 * FX_NYOOOM ) * pt.x ) * pt.yz;
+  pt.y += 2.0 * FX_SKEW * pt.x;
+  pt += FX_DEFORM;
+  pt.zx = rotate2D( mod( 2.5 * iTime + PI, TAU ) + FX_TWIST * pt.y ) * pt.zx;
+  pt.xy = rotate2D( 0.6 * sin( 0.9 * iTime ) ) * pt.xy;
+  pt.yz = rotate2D( 0.6 * sin( 1.4 * iTime ) ) * pt.yz;
+  pt -= normalize( pt ) * FX_KICK * sin( 15.0 * length( pt ) - 40.0 * iTime );
+  return pt;
+}
+
+MarchResult distFunc( vec3 p ) {
+  MarchResult result;
+
+  vec3 pt = p;
+  pt = deform( pt );
+  result.dist = distFuncBox( pt, vec3( SIZE ) );
+
+  vec3 spt = vec3( 1.0 );
+
+  if ( FX_FORWARD > 0.0 ) {
+    vec3 ptIfs = p;
+    ptIfs.z = mod( ptIfs.z - 16.0 * iTime + 3.0 * sin( HALF_PI * BEAT + 0.5 ), 6.0 ) - 3.0;
+    for ( int i = 0; i < 6; i ++ ) {
+      float fi = float( i );
+      spt *= sign( ptIfs );
+      ptIfs = abs( ptIfs ) - vec3( 3.2, 4.5, 1.2 ) / max( 1E-2, FX_FORWARD ) * pow( 0.5, fi );
+      ptIfs.xy = rotate2D( 1.1 ) * ptIfs.xy;
+      ptIfs.zx = rotate2D( 2.1 ) * ptIfs.zx;
+    }
+
+    ptIfs = deform( ptIfs );
+
+    float distIfs = distFuncBox( ptIfs, vec3( SIZE ) );
+
+    if ( result.dist < distIfs ) {
+      spt = vec3( 1.0 );
+    } else {
+      result.dist = distIfs;
+      pt = ptIfs;
+    }
+  }
+
+  vec3 abspt = abs( pt );
+  float n = max( abspt.x, max( abspt.y, abspt.z ) );
+
+  result.uv = 0.5 + (
+    ( n == abspt.z ) ? ( pt.xy * vec2( sign( pt.z ), 1.0 ) ) :
+    ( n == abspt.x ) ? ( pt.zy * vec2( -sign( pt.x ), 1.0 ) ) :
+    ( pt.xz * vec2( 1.0, -sign( pt.y ) ) )
+  ) * spt.x * spt.y * spt.z * 0.5 / SIZE;
+
+  return result;
+}
+
+vec3 normalFunc( vec3 p, float dd ) {
+  vec2 d = vec2( 0.0, dd );
+  return normalize( vec3(
+    distFunc( p + d.yxx ).dist - distFunc( p - d.yxx ).dist,
+    distFunc( p + d.xyx ).dist - distFunc( p - d.xyx ).dist,
+    distFunc( p + d.xxy ).dist - distFunc( p - d.xxy ).dist
+  ) );
+}
+
+vec3 normalFunc( vec3 p ) {
+  return normalFunc( p, MARCH_NEAR );
+}
+
+// == main procedure ===============================================================================
+void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+  vec2 p = ( fragCoord.xy * 2.0 - iResolution.xy ) / iResolution.x;
+  Camera camera = newCamera( vec3( 0.0, 0.0, 0.0 ), vec3( 0.0, 0.0, -1.0 ) );
+  //camera.fov = 0.6 + 0.9 * FX_FORWARD * ( 0.5 + 0.5 * sin( HALF_PI * BEAT - 0.5 ) );
+  camera.pos.z = 0.5 + 1.5 / camera.fov;
+  Ray ray = rayFromCamera( camera, p );
+
+  Intersection isect;
+  float rayLen = MARCH_NEAR;
+  vec3 rayPos = getRayPosition( ray, rayLen );
+  MarchResult result;
+  for ( int i = 0; i < MARCH_ITER; i ++ ) {
+    result = distFunc( rayPos );
+    if ( abs( result.dist ) < MARCH_NEAR ) { break; }
+    rayLen += result.dist * MARCH_MULP;
+    if ( MARCH_FAR < rayLen ) { break; }
+    rayPos = getRayPosition( ray, rayLen );
+  }
+
+  vec3 bg = vec3( 0.0 );
+
+  if ( abs( result.dist ) < MARCH_NEAR ) {
+    vec3 normal = normalFunc( rayPos );
+    float edge = linearstep( 0.498, 0.499, abs( result.uv.x - 0.5 ) );
+    edge += linearstep( 0.495, 0.497, abs( result.uv.y - 0.5 ) );
+    vec2 uv = result.uv;
+    vec4 tex = vec4(0.0,0.5,0.5,1.0);
+    float fog = exp( -0.2 * max( 0.0, rayLen - 3.0 ) );
+    fragColor = vec4( fog * mix(
+      0.1 + 0.1 * normal + 0.8 * tex.rgb,
+      1.0 + 1.0 * sin( vec3( 0.0, 1.0, 2.0 ) + 10.0 * length( result.uv - 0.5 ) - 10.0 * iTime ),
+      edge
+    ), 1.0 );
+  } else {
+    // discard;
+    fragColor = vec4( 0.0, 0.0, 0.0, 1.0 );
+  }
+}
+
+void main() 
+{
+    mainImage( gl_FragColor, gl_FragCoord.xy );
+}
+</script>
+
+<script id="draw-shader-vs" type="x-shader/x-vertex">
+attribute vec2 inPos;
+
+void main() 
+{
+    gl_Position = vec4(inPos, 0.0, 1.0);
+}
+</script>
+<div>
+    <div id="html-window">
+      <h class="title">Hello!</h>
+      <p>Welcome to my site</p>
+      <p>All Of my links are displayed below here</p>
+      <a href = "https://www.youtube.com/@E-it1">Youtube</a>
+      <a href = "https://github.com/kkmfd-Offical">Github</a>
+      <a href = "https://scratch.mit.edu/users/kkmfd/">Scratch</a>
+      <a href="https://scratch.mit.edu/projects/837401836/">Best Scratch Project i made</a>
+      <a href="https://www.youtube.com/watch?v=xvFZjo5PgG0">Old Cring account Recovered Video</a>
+    </div>
+  <canvas id="ogl-canvas" style="border: none"></canvas>
+</div>
+
+<script>(function loadscene() {    
+
+var canvas, gl, vp_size, prog, bufObj = {}, mousepos = [0, 0];
+
+function initScene() {
+
+    canvas = document.getElementById( "ogl-canvas");
+    gl = canvas.getContext( "experimental-webgl" );
+    if ( !gl )
+      return;
+
+    canvas.addEventListener('mousemove', (e) => {
+        mousepos = [e.clientX, e.clientY];
+    });
+
+    progDraw = gl.createProgram();
+    for (let i = 0; i < 2; ++i) {
+        let source = document.getElementById(i==0 ? "draw-shader-vs" : "draw-shader-fs").text;
+        let shaderObj = gl.createShader(i==0 ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER);
+        gl.shaderSource(shaderObj, source);
+        gl.compileShader(shaderObj);
+        let status = gl.getShaderParameter(shaderObj, gl.COMPILE_STATUS);
+        if (!status) alert(gl.getShaderInfoLog(shaderObj));
+        gl.attachShader(progDraw, shaderObj);
+        gl.linkProgram(progDraw);
+    }
+    status = gl.getProgramParameter(progDraw, gl.LINK_STATUS);
+    if ( !status ) alert(gl.getProgramInfoLog(progDraw));
+    progDraw.inPos = gl.getAttribLocation(progDraw, "inPos");
+    progDraw.iTime = gl.getUniformLocation(progDraw, "iTime");
+    progDraw.iMouse = gl.getUniformLocation(progDraw, "iMouse");
+    progDraw.iResolution = gl.getUniformLocation(progDraw, "iResolution");
+    gl.useProgram(progDraw);
+
+    var pos = [ -1, -1, 1, -1, 1, 1, -1, 1 ];
+    var inx = [ 0, 1, 2, 0, 2, 3 ];
+    bufObj.pos = gl.createBuffer();
+    gl.bindBuffer( gl.ARRAY_BUFFER, bufObj.pos );
+    gl.bufferData( gl.ARRAY_BUFFER, new Float32Array( pos ), gl.STATIC_DRAW );
+    bufObj.inx = gl.createBuffer();
+    bufObj.inx.len = inx.length;
+    gl.bindBuffer( gl.ELEMENT_ARRAY_BUFFER, bufObj.inx );
+    gl.bufferData( gl.ELEMENT_ARRAY_BUFFER, new Uint16Array( inx ), gl.STATIC_DRAW );
+    gl.enableVertexAttribArray( progDraw.inPos );
+    gl.vertexAttribPointer( progDraw.inPos, 2, gl.FLOAT, false, 0, 0 ); 
+    
+    gl.enable( gl.DEPTH_TEST );
+    gl.clearColor( 0.0, 0.0, 0.0, 1.0 );
+
+    window.onresize = resize;
+    resize();
+    requestAnimationFrame(render);
+}
+
+function resize() {
+    //vp_size = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    vp_size = [window.innerWidth, window.innerHeight];
+    //vp_size = [256, 256]
+    canvas.width = vp_size[0];
+    canvas.height = vp_size[1];
+}
+
+function render(deltaMS) {
+
+    gl.viewport( 0, 0, canvas.width, canvas.height );
+    gl.clear( gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT );
+   
+    gl.uniform1f(progDraw.iTime, deltaMS/1000.0);
+    gl.uniform2f(progDraw.iResolution, canvas.width, canvas.height);
+    gl.uniform2f(progDraw.iMouse, mousepos[0], mousepos[1]);
+    gl.drawElements( gl.TRIANGLES, bufObj.inx.len, gl.UNSIGNED_SHORT, 0 );
+    
+    requestAnimationFrame(render);
+}  
+
+initScene();
+
+})();
+//# sourceURL=userscript.js
+</script>
+</body>
+</html>
